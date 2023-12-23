@@ -1,56 +1,110 @@
-#include <arpa/inet.h>
-#include <netinet/in.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <getopt.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 
-#define SERV_PORT 20001
-#define BUFSIZE 1024
-#define SADDR struct sockaddr
-#define SLEN sizeof(struct sockaddr_in)
-
-int main() {
-  int sockfd, n;
-  char mesg[BUFSIZE], ipadr[16];
-  struct sockaddr_in servaddr;
-  struct sockaddr_in cliaddr;
-
-  if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-    perror("socket problem");
-    exit(1);
-  }
-
-  memset(&servaddr, 0, SLEN);
-  servaddr.sin_family = AF_INET;
-  servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-  servaddr.sin_port = htons(SERV_PORT);
-
-  if (bind(sockfd, (SADDR *)&servaddr, SLEN) < 0) {
-    perror("bind problem");
-    exit(1);
-  }
-  printf("SERVER starts...\n");
-
-  while (1) {
-    unsigned int len = SLEN;
-
-    if ((n = recvfrom(sockfd, mesg, BUFSIZE, 0, (SADDR *)&cliaddr, &len)) < 0) {
-      perror("recvfrom");
-      exit(1);
+int SetupConnectionServer(int port) {
+    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("socket");
+        exit(1);
     }
-    mesg[n] = 0;
 
-    printf("REQUEST %s      FROM %s : %d\n", mesg,
-           inet_ntop(AF_INET, (void *)&cliaddr.sin_addr.s_addr, ipadr, 16),
-           ntohs(cliaddr.sin_port));
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(struct sockaddr_in));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(port);
 
-    if (sendto(sockfd, mesg, n, 0, (SADDR *)&cliaddr, len) < 0) {
-      perror("sendto");
-      exit(1);
+    if (bind(sockfd, (struct sockaddr_in *)&address, sizeof(struct sockaddr_in)) < 0) {
+        perror("bind");
+        exit(1);
+    } return sockfd;
+}
+
+
+int main(int argc, char* argv[]) {
+    //char ip[255] = {'\0'};
+    int port = -1;
+    int buf_size = -1;
+
+    while (true) {
+        int current_optind = optind ? optind : 1;
+
+        static struct option options[] = {//{"ip", _argument, 0, 0},
+                                        {"port", required_argument, 0, 0},
+                                        {"buf_size", required_argument, 0, 0},
+                                        {0, 0, 0, 0}};
+
+        int option_index = 0;
+        int c = getopt_long(argc, argv, "", options, &option_index);
+
+        if (c == -1)
+        break;
+
+        switch (c) {
+            case 0: {
+                switch (option_index) {
+                    case 0:
+                        port = atoi(optarg);
+                        if (port < 0 || port > 65532) {
+                            fprintf(stderr, "Invalid port: %d\n", port);
+                            return 1;
+                        } break;
+                    case 1:
+                        buf_size = atoi(optarg);
+                        if (buf_size < 32) {
+                            fprintf(stderr, "buf_size must be more than 32: %d\n", buf_size);
+                            return 1;
+                        } break;
+                    default:
+                        fprintf(stderr, "Index %d is out of options\n", option_index);
+                }
+            } break;
+
+            case '?':
+                printf("Arguments error\n");
+                break;
+                
+            default:
+                fprintf(stderr, "getopt returned character code 0%o?\n", c);
+        }
     }
-  }
+
+    if (port == -1 || buf_size == -1) {
+        fprintf(stderr, "Using: %s --port 20001 --buf_size 1024\n", argv[0]);
+        return 1;
+    }
+
+    int sockfd = SetupConnectionServer(port);
+    printf("SERVER starts...\n");
+
+    int n;
+    char mesg[buf_size], ipadr[16];
+    struct sockaddr_in cliaddr;
+    while (true) {
+        unsigned int len = sizeof(struct sockaddr_in);
+        if ((n = recvfrom(sockfd, mesg, buf_size, 0, (struct sockaddr_in *)&cliaddr, &len)) < 0) {
+            perror("recvfrom");
+            exit(1);
+        }
+
+        mesg[n] = '\0';
+        const char* recv_ip = inet_ntop(AF_INET, (void *)&cliaddr.sin_addr.s_addr, ipadr, 16);
+        printf("REQUEST %s      FROM %s:%d\n", mesg, recv_ip, cliaddr.sin_port);
+
+        if (sendto(sockfd, mesg, n, 0, (struct sockaddr_in *)&cliaddr, len) < 0) {
+            perror("sendto");
+            exit(1);
+        }
+    }
 }
